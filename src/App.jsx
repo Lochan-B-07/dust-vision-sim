@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, ReferenceLine } from "recharts";
+import { AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, ReferenceLine, Legend } from "recharts";
 import { Camera, Plus, Download, Activity, Wind, Server, AlertTriangle, MapPin, X, CheckCircle2, Box, BarChart2, LayoutDashboard, PieChart, Map } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx } from "clsx";
@@ -43,8 +43,7 @@ const CustomTooltip = ({ active, payload, label }) => {
     return (
       <div className="bg-slate-900/90 border border-slate-700 p-3 rounded-lg shadow-2xl backdrop-blur-md">
         <p className="text-slate-400 text-xs mb-1">{label}</p>
-        <p className="text-emerald-400 text-sm font-mono">Actual: <span className="font-bold">{payload[0].value.toFixed(1)}</span></p>
-        <p className="text-cyan-400 text-sm font-mono">AI Forecast: <span className="font-bold">{payload[1].value.toFixed(1)}</span></p>
+        <p className="text-emerald-400 text-sm font-mono">Value: <span className="font-bold">{payload[0].value.toFixed(1)}</span></p>
       </div>
     );
   }
@@ -65,36 +64,47 @@ const StatCard = ({ title, value, icon: Icon, trend }) => (
 export default function App() {
   const [data, setData] = useState(INITIAL_DATA);
   const [chartData, setChartData] = useState([]);
+  const [futureData, setFutureData] = useState([]); // NEW: For the 15-min forecast
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newNode, setNewNode] = useState({ id: "", location: "" });
   const [activeTab, setActiveTab] = useState("dashboard"); 
   const logsEndRef = useRef(null);
 
-  const [simStats, setSimStats] = useState({ pm10: 64, predicted: 65 });
+  const [simStats, setSimStats] = useState({ pm10: 64, predicted: 65, wind: { angle: 0, name: 'N' } });
   const lastLogTime = useRef(0); 
-  
-  // FIX: Track if we are currently in a "High Dust" state
   const isHazardous = useRef(false);
 
-  // --- CONFIG ---
   const ALERT_THRESHOLD = 40; 
 
-  // --- LISTENER ---
   const handleSimUpdate = (stats) => {
     setSimStats(stats); 
 
     const now = Date.now();
     const currentForecast = stats.predicted;
     
-    // Calculate Logs BEFORE State Update
+    // --- LOGIC: Generate 15-Minute Forecast based on Wind ---
+    // If wind is active, we project a curve into the future
+    const futurePoints = [];
+    let projectedPM = stats.pm10;
+    const windImpact = Math.sin((stats.wind?.angle || 0) * (Math.PI / 180)); // Simple wind vector impact
+    
+    // Generate 15 minutes of data (e.g., 1 point per minute)
+    for (let i = 1; i <= 15; i++) {
+        // Future math: Current Level + (Wind Factor * Time) + Small Noise
+        projectedPM = projectedPM + (windImpact * 2) + (Math.random() * 5 - 2.5);
+        // Clamp to 0
+        if(projectedPM < 0) projectedPM = 0;
+        
+        const futureTime = new Date(now + i * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        futurePoints.push({ time: futureTime, predicted: projectedPM });
+    }
+    setFutureData(futurePoints);
+
+    // --- LOGIC: Logging System ---
     let logToAdd = null;
 
-    // 1. DANGER ZONE (Forecast > 40)
     if (currentForecast > ALERT_THRESHOLD) {
-        // Mark state as hazardous
         isHazardous.current = true;
-
-        // Nag every 4 seconds
         if (now - lastLogTime.current > 4000) {
             logToAdd = { 
                 id: now, 
@@ -105,10 +115,7 @@ export default function App() {
             lastLogTime.current = now;
         }
     } 
-    // 2. SAFE ZONE (Forecast <= 40)
     else {
-        // ONLY log success if we were previously Hazardous
-        // This prevents "Success" spam. It only logs ONCE when resolving a spike.
         if (isHazardous.current === true) {
             logToAdd = { 
                 id: now, 
@@ -116,22 +123,17 @@ export default function App() {
                 type: "SUCCESS", 
                 message: `Mitigation Complete. Air Quality Stabilized.` 
             };
-            // Reset state so we don't log this again until next spike
             isHazardous.current = false; 
             lastLogTime.current = now;
         }
     }
 
-    // Update Charts
     const timeLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     setChartData((prev) => [...prev, { time: timeLabel, pm10: stats.pm10, forecast: stats.predicted }].slice(-40));
 
-    // Update Data
     setData((prev) => {
         let newLogs = [...prev.recent_logs];
-        if (logToAdd) {
-            newLogs.push(logToAdd);
-        }
+        if (logToAdd) newLogs.push(logToAdd);
         if(newLogs.length > 50) newLogs.shift();
 
         const updatedNodes = prev.nodes.map((n) => ({
@@ -211,7 +213,6 @@ export default function App() {
             <div className={cn("grid grid-cols-12 gap-6 h-[500px]", activeTab === 'dashboard' ? "" : "hidden")}>
                 <GlassCard className="col-span-8 flex flex-col p-0 overflow-hidden relative">
                     <div className="w-full h-full">
-                        {/* PASS THE HANDLER DOWN */}
                         <DustSimulation nodes={data.nodes} onDataUpdate={handleSimUpdate} />
                     </div>
                 </GlassCard>
@@ -232,16 +233,13 @@ export default function App() {
                 </GlassCard>
             </div>
 
-            {/* ANALYTICS TAB */}
+            {/* ANALYTICS TAB - UPDATED with 2 CHARTS */}
             {activeTab === 'analytics' && (
-                <div className="grid grid-cols-1 gap-6 h-[500px]">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[500px]">
+                     {/* CHART 1: Real-time Monitor */}
                      <GlassCard className="flex flex-col relative h-full">
                         <div className="flex justify-between items-center mb-6">
-                            <div>
-                                <h3 className="text-lg font-semibold text-white">Pollution Forecast Engine</h3>
-                                <p className="text-sm text-slate-400">Real-time sensor data vs. AI Prediction Model</p>
-                            </div>
-                            <div className="flex gap-4 text-xs"><span className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-cyan-400"/> Forecast</span><span className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-emerald-500"/> Actual</span></div>
+                            <div><h3 className="text-lg font-semibold text-white">Real-Time Variance</h3><p className="text-sm text-slate-400">Actual vs Predicted (Last 60s)</p></div>
                         </div>
                         <div className="flex-1 w-full min-h-0">
                              <ResponsiveContainer width="100%" height="100%">
@@ -251,10 +249,28 @@ export default function App() {
                                   <XAxis dataKey="time" stroke="#64748B" fontSize={11} tickLine={false} axisLine={false} />
                                   <YAxis stroke="#64748B" fontSize={11} tickLine={false} axisLine={false} />
                                   <Tooltip content={<CustomTooltip />} />
-                                  <ReferenceLine y={250} stroke="#EF4444" strokeDasharray="3 3" label={{ value: 'HAZARDOUS', fill: '#EF4444', fontSize: 10, position: 'insideTopRight' }} />
                                   <Area type="monotone" dataKey="forecast" stroke="#22D3EE" strokeWidth={2} strokeDasharray="5 5" fill="url(#colorFc)" animationDuration={1000} />
                                   <Area type="monotone" dataKey="pm10" stroke="#10B981" strokeWidth={2} fill="url(#colorPm)" animationDuration={1000} />
                                 </AreaChart>
+                              </ResponsiveContainer>
+                        </div>
+                    </GlassCard>
+
+                    {/* CHART 2: Future Prediction (15 Mins) */}
+                    <GlassCard className="flex flex-col relative h-full">
+                        <div className="flex justify-between items-center mb-6">
+                            <div><h3 className="text-lg font-semibold text-white">15-Minute Forecast</h3><p className="text-sm text-slate-400">Wind-Adjusted Trajectory</p></div>
+                        </div>
+                        <div className="flex-1 w-full min-h-0">
+                             <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={futureData}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} opacity={0.3} />
+                                  <XAxis dataKey="time" stroke="#64748B" fontSize={11} tickLine={false} axisLine={false} />
+                                  <YAxis stroke="#64748B" fontSize={11} tickLine={false} axisLine={false} />
+                                  <Tooltip content={<CustomTooltip />} />
+                                  <Line type="monotone" dataKey="predicted" stroke="#F59E0B" strokeWidth={3} dot={{r:4, fill:"#F59E0B"}} animationDuration={1000} />
+                                  <ReferenceLine y={40} stroke="#EF4444" strokeDasharray="3 3" label={{ value: 'THRESHOLD', fill: '#EF4444', fontSize: 10 }} />
+                                </LineChart>
                               </ResponsiveContainer>
                         </div>
                     </GlassCard>
