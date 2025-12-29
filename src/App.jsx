@@ -42,8 +42,12 @@ const CustomTooltip = ({ active, payload, label }) => {
   if (active && payload && payload.length) {
     return (
       <div className="bg-slate-900/90 border border-slate-700 p-3 rounded-lg shadow-2xl backdrop-blur-md">
-        <p className="text-slate-400 text-xs mb-1">{label}</p>
-        <p className="text-emerald-400 text-sm font-mono">Value: <span className="font-bold">{payload[0].value.toFixed(1)}</span></p>
+        <p className="text-slate-400 text-xs mb-2">{label}</p>
+        {payload.map((entry, index) => (
+          <p key={index} style={{ color: entry.color }} className="text-sm font-mono mb-1">
+            {entry.name}: <span className="font-bold">{entry.value.toFixed(1)}</span>
+          </p>
+        ))}
       </div>
     );
   }
@@ -64,7 +68,7 @@ const StatCard = ({ title, value, icon: Icon, trend }) => (
 export default function App() {
   const [data, setData] = useState(INITIAL_DATA);
   const [chartData, setChartData] = useState([]);
-  const [futureData, setFutureData] = useState([]); // NEW: For the 15-min forecast
+  const [futureData, setFutureData] = useState([]); 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newNode, setNewNode] = useState({ id: "", location: "" });
   const [activeTab, setActiveTab] = useState("dashboard"); 
@@ -75,32 +79,40 @@ export default function App() {
   const isHazardous = useRef(false);
 
   const ALERT_THRESHOLD = 40; 
+  const CHART_Y_DOMAIN = [0, 120];
 
   const handleSimUpdate = (stats) => {
     setSimStats(stats); 
 
     const now = Date.now();
-    const currentForecast = stats.predicted;
+    const currentPM = stats.pm10;
     
-    // --- LOGIC: Generate 15-Minute Forecast based on Wind ---
-    // If wind is active, we project a curve into the future
+    // FIX: Reduced Multiplier to 1.05 (5% margin) as requested
+    // Forecast = Actual * 1.05 + Small Random Noise
+    let calculatedForecast = (currentPM * 1.05) + (Math.random() * 3 - 1.5);
+    
+    // Safety check to prevent it dropping below actual by accident
+    if (calculatedForecast < currentPM) calculatedForecast = currentPM + 0.5;
+
+    const currentForecast = calculatedForecast;
+    
+    // --- 1. STABLE FUTURE FORECAST ---
     const futurePoints = [];
-    let projectedPM = stats.pm10;
-    const windImpact = Math.sin((stats.wind?.angle || 0) * (Math.PI / 180)); // Simple wind vector impact
+    futurePoints.push({ time: "Now", predicted: currentForecast, name: "Forecast" }); 
+
+    let projectedPM = currentForecast;
+    const windImpact = Math.sin((stats.wind?.angle || 0) * (Math.PI / 180)); 
     
-    // Generate 15 minutes of data (e.g., 1 point per minute)
     for (let i = 1; i <= 15; i++) {
-        // Future math: Current Level + (Wind Factor * Time) + Small Noise
-        projectedPM = projectedPM + (windImpact * 2) + (Math.random() * 5 - 2.5);
-        // Clamp to 0
+        projectedPM = projectedPM + (windImpact * 1.5) + (Math.random() * 1 - 0.5); 
         if(projectedPM < 0) projectedPM = 0;
         
-        const futureTime = new Date(now + i * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        futurePoints.push({ time: futureTime, predicted: projectedPM });
+        const futureTime = new Date(now + i * 60000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        futurePoints.push({ time: futureTime, predicted: projectedPM, name: "Forecast" });
     }
     setFutureData(futurePoints);
 
-    // --- LOGIC: Logging System ---
+    // --- 2. LOGGING LOGIC ---
     let logToAdd = null;
 
     if (currentForecast > ALERT_THRESHOLD) {
@@ -128,8 +140,9 @@ export default function App() {
         }
     }
 
+    // --- 3. UPDATE STATE ---
     const timeLabel = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setChartData((prev) => [...prev, { time: timeLabel, pm10: stats.pm10, forecast: stats.predicted }].slice(-40));
+    setChartData((prev) => [...prev, { time: timeLabel, pm10: currentPM, forecast: currentForecast }].slice(-40));
 
     setData((prev) => {
         let newLogs = [...prev.recent_logs];
@@ -138,8 +151,8 @@ export default function App() {
 
         const updatedNodes = prev.nodes.map((n) => ({
             ...n,
-            pm10: stats.pm10 + (Math.random() * 20 - 10),
-            status: getStatus(stats.pm10),
+            pm10: currentPM + (Math.random() * 20 - 10),
+            status: getStatus(currentPM),
         }));
 
         return { ...prev, timestamp: new Date().toISOString(), nodes: updatedNodes, recent_logs: newLogs };
@@ -233,10 +246,10 @@ export default function App() {
                 </GlassCard>
             </div>
 
-            {/* ANALYTICS TAB - UPDATED with 2 CHARTS */}
+            {/* ANALYTICS TAB */}
             {activeTab === 'analytics' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[500px]">
-                     {/* CHART 1: Real-time Monitor */}
+                     {/* CHART 1: Real-time Variance */}
                      <GlassCard className="flex flex-col relative h-full">
                         <div className="flex justify-between items-center mb-6">
                             <div><h3 className="text-lg font-semibold text-white">Real-Time Variance</h3><p className="text-sm text-slate-400">Actual vs Predicted (Last 60s)</p></div>
@@ -247,16 +260,17 @@ export default function App() {
                                   <defs><linearGradient id="colorPm" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10B981" stopOpacity={0.3}/><stop offset="95%" stopColor="#10B981" stopOpacity={0}/></linearGradient><linearGradient id="colorFc" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#22D3EE" stopOpacity={0.3}/><stop offset="95%" stopColor="#22D3EE" stopOpacity={0}/></linearGradient></defs>
                                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} opacity={0.3} />
                                   <XAxis dataKey="time" stroke="#64748B" fontSize={11} tickLine={false} axisLine={false} />
-                                  <YAxis stroke="#64748B" fontSize={11} tickLine={false} axisLine={false} />
+                                  <YAxis stroke="#64748B" fontSize={11} tickLine={false} axisLine={false} domain={CHART_Y_DOMAIN} />
                                   <Tooltip content={<CustomTooltip />} />
-                                  <Area type="monotone" dataKey="forecast" stroke="#22D3EE" strokeWidth={2} strokeDasharray="5 5" fill="url(#colorFc)" animationDuration={1000} />
-                                  <Area type="monotone" dataKey="pm10" stroke="#10B981" strokeWidth={2} fill="url(#colorPm)" animationDuration={1000} />
+                                  <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
+                                  <Area name="Forecast" type="monotone" dataKey="forecast" stroke="#22D3EE" strokeWidth={2} strokeDasharray="5 5" fill="url(#colorFc)" animationDuration={1000} />
+                                  <Area name="Actual PM10" type="monotone" dataKey="pm10" stroke="#10B981" strokeWidth={2} fill="url(#colorPm)" animationDuration={1000} />
                                 </AreaChart>
                               </ResponsiveContainer>
                         </div>
                     </GlassCard>
 
-                    {/* CHART 2: Future Prediction (15 Mins) */}
+                    {/* CHART 2: Future Forecast (15 Mins) */}
                     <GlassCard className="flex flex-col relative h-full">
                         <div className="flex justify-between items-center mb-6">
                             <div><h3 className="text-lg font-semibold text-white">15-Minute Forecast</h3><p className="text-sm text-slate-400">Wind-Adjusted Trajectory</p></div>
@@ -266,9 +280,9 @@ export default function App() {
                                 <LineChart data={futureData}>
                                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} opacity={0.3} />
                                   <XAxis dataKey="time" stroke="#64748B" fontSize={11} tickLine={false} axisLine={false} />
-                                  <YAxis stroke="#64748B" fontSize={11} tickLine={false} axisLine={false} />
+                                  <YAxis stroke="#64748B" fontSize={11} tickLine={false} axisLine={false} domain={CHART_Y_DOMAIN} />
                                   <Tooltip content={<CustomTooltip />} />
-                                  <Line type="monotone" dataKey="predicted" stroke="#F59E0B" strokeWidth={3} dot={{r:4, fill:"#F59E0B"}} animationDuration={1000} />
+                                  <Line name="Forecast" type="monotone" dataKey="predicted" stroke="#F59E0B" strokeWidth={3} dot={false} animationDuration={500} />
                                   <ReferenceLine y={40} stroke="#EF4444" strokeDasharray="3 3" label={{ value: 'THRESHOLD', fill: '#EF4444', fontSize: 10 }} />
                                 </LineChart>
                               </ResponsiveContainer>
